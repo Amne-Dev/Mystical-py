@@ -1,130 +1,329 @@
+# ui/main_window.py
 import subprocess
 import multiprocessing as mp
-from PySide6.QtCore import QTimer, Qt
+import os
+import sys
+from pathlib import Path
+from shutil import rmtree
+
+from PySide6.QtCore import QTimer, Qt, QSize
 from PySide6.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QListWidget,
-    QListWidgetItem, QLabel, QComboBox, QHBoxLayout, QMessageBox, QMenu
+    QMainWindow, QWidget, QVBoxLayout, QListWidget, QListWidgetItem,
+    QLabel, QComboBox, QHBoxLayout, QMessageBox, QMenu,
+    QPushButton, QScrollArea, QGridLayout, QFrame, QApplication, QSpacerItem, QSizePolicy
 )
-from PySide6.QtGui import QAction
+from PySide6.QtGui import QAction, QIcon, QPalette
 
 from backend.scanner import scan_libraries
 from backend.models import GameEntry
-from ui.game_list import GameItemWidget
+from ui.game_item import GameItemWidget, CACHE_DIR, get_cached_cover_path
 from ui.settings_dialog import SettingsDialog
 from common.favorites import get_favorites, add_favorite, remove_favorite, is_favorite
-import os, sys
+
 
 def open_install_folder(path):
-    if sys.platform == "win32":
-        os.startfile(path)  # Windows
-    elif sys.platform == "darwin":
-        subprocess.Popen(["open", str(path)])  # macOS
-    else:
-        subprocess.Popen(["xdg-open", str(path)])  # Linux
+    try:
+        if sys.platform == "win32":
+            os.startfile(path)
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", str(path)])
+        else:
+            subprocess.Popen(["xdg-open", str(path)])
+    except Exception:
+        pass
 
 
 class MainWindow(QMainWindow):
+    GRID_COLS = 4
+    GRID_CELL_W = 260
+    GRID_CELL_H = 300
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Mystical")
-        self.setGeometry(200, 200, 900, 600)
+        self.setGeometry(160, 120, 1200, 900)
 
         self.all_games: list[GameEntry] = []
-        self.current_filter = "All Games"
+        self.view_mode = "grid"
+        self._scan_process = None
+        self._scan_queue = None
 
-        # Menu
-        menubar = self.menuBar()
-        settings_menu = menubar.addMenu("Settings")
-        open_settings = QAction("Preferences", self)
-        open_settings.triggered.connect(self.open_settings_dialog)
-        settings_menu.addAction(open_settings)
-
-        # Central
         central = QWidget()
         self.setCentralWidget(central)
-        layout = QVBoxLayout(central)
+        root = QHBoxLayout(central)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
-        # Top bar
-        top_bar = QHBoxLayout()
-        self.status_label = QLabel("Scanning libraries...", self)
+        # Sidebar (dark, fixed) — buttons here MUST use default icons (no _dark)
+        sidebar = QFrame()
+        sidebar.setObjectName("sidebar")
+        sidebar.setFixedWidth(84)
+        sidebar.setStyleSheet("QFrame#sidebar { background-color: #171717; color: white; }")
+        sidebar_l = QVBoxLayout(sidebar)
+        sidebar_l.setContentsMargins(8, 8, 8, 8)
+        sidebar_l.setSpacing(10)
+
+        lbl = QLabel("Mystical")
+        lbl.setAlignment(Qt.AlignCenter)
+        lbl.setStyleSheet("font-weight:700; color: white;")
+        sidebar_l.addWidget(lbl)
+
+        self.sidebar_status = QLabel("Scanning...")
+        self.sidebar_status.setStyleSheet("color:#cfcfcf; font-size:12px;")
+        self.sidebar_status.setAlignment(Qt.AlignCenter)
+        sidebar_l.addWidget(self.sidebar_status)
+
+        sidebar_l.addSpacerItem(QSpacerItem(10, 10, QSizePolicy.Minimum, QSizePolicy.Expanding))
+
+        # View toggle (sidebar button) — ALWAYS use default icons (no _dark)
+        self.view_toggle = QPushButton()
+        self.view_toggle.setIcon(self._get_sidebar_icon("grid"))
+        self.view_toggle.setIconSize(QSize(28, 28))
+        self.view_toggle.setFlat(True)
+        self.view_toggle.clicked.connect(self._toggle_view)
+        sidebar_l.addWidget(self.view_toggle, alignment=Qt.AlignHCenter)
+
+        # Refresh covers button (sidebar) — default icon
+        self.refresh_btn = QPushButton()
+        self.refresh_btn.setIcon(self._get_sidebar_icon("refresh"))
+        self.refresh_btn.setIconSize(QSize(24, 24))
+        self.refresh_btn.setFlat(True)
+        self.refresh_btn.setToolTip("Refresh covers (clears cache)")
+        self.refresh_btn.clicked.connect(self._on_refresh_covers)
+        sidebar_l.addWidget(self.refresh_btn, alignment=Qt.AlignHCenter)
+
+        # Settings (gear) — sidebar, default icon
+        self.settings_btn = QPushButton()
+        self.settings_btn.setIcon(self._get_sidebar_icon("gear"))
+        self.settings_btn.setIconSize(QSize(28, 28))
+        self.settings_btn.setFlat(True)
+        self.settings_btn.clicked.connect(self.open_settings_dialog)
+        sidebar_l.addWidget(self.settings_btn, alignment=Qt.AlignHCenter)
+
+        sidebar_l.addSpacerItem(QSpacerItem(10, 10, QSizePolicy.Minimum, QSizePolicy.Expanding))
+
+        root.addWidget(sidebar)
+
+        # Main content area
+        content = QWidget()
+        content_l = QVBoxLayout(content)
+        content_l.setContentsMargins(12, 12, 12, 12)
+        content_l.setSpacing(8)
+
+        top = QHBoxLayout()
+        self.status_label = QLabel("Scanning libraries...")
+        top.addWidget(self.status_label)
+        top.addStretch()
 
         self.filter_box = QComboBox()
-        self.filter_box.addItems([
-            "All Games",
-            "Installed Only",
-            "Steam",
-            "Epic",
-            "Riot",
-            "Favorites"
-        ])
+        self.filter_box.addItems(["All Games", "Installed Only", "Steam", "Epic", "Riot", "Favorites"])
         self.filter_box.currentTextChanged.connect(self.apply_filter)
+        top.addWidget(QLabel("Filter:"))
+        top.addWidget(self.filter_box)
+        content_l.addLayout(top)
 
-        top_bar.addWidget(self.status_label)
-        top_bar.addStretch()
-        top_bar.addWidget(QLabel("Filter:"))
-        top_bar.addWidget(self.filter_box)
-        layout.addLayout(top_bar)
+        # list view
+        self.list_widget = QListWidget()
+        self.list_widget.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.list_widget.customContextMenuRequested.connect(self.open_context_menu)
+        self.list_widget.itemDoubleClicked.connect(self._on_item_double)
+        content_l.addWidget(self.list_widget)
 
-        # Game list
-        self.game_list = QListWidget()
-        self.game_list.setContextMenuPolicy(Qt.CustomContextMenu)
-        self.game_list.customContextMenuRequested.connect(self.open_context_menu)
-        self.game_list.itemDoubleClicked.connect(self.launch_selected_game)
-        layout.addWidget(self.game_list)
+        # grid view (scrollable)
+        self.scroll = QScrollArea()
+        self.scroll.setWidgetResizable(True)
+        self.grid_container = QWidget()
+        self.grid_layout = QGridLayout(self.grid_container)
+        # tighter spacing
+        self.grid_layout.setContentsMargins(6, 6, 6, 6)
+        self.grid_layout.setSpacing(8)
+        self.scroll.setWidget(self.grid_container)
+        content_l.addWidget(self.scroll)
 
-        # Start scan
+        root.addWidget(content, stretch=1)
+
+        # start with grid visible
+        self._show_grid(True)
         self.start_scan()
 
+    # ----------------------------
+    # icon helpers
+    # ----------------------------
+    def _is_light_theme(self) -> bool:
+        app = QApplication.instance()
+        if not app:
+            return False
+        pal: QPalette = app.palette()
+        return pal.color(QPalette.Window).lightness() > pal.color(QPalette.WindowText).lightness()
+
+    def _get_sidebar_icon(self, name: str) -> QIcon:
+        """
+        Sidebar MUST use the default variant (no `_dark`).
+        Expecting assets/icons/<name>.png
+        """
+        base = Path("assets") / "icons"
+        p = base / f"{name}.png"
+        if p.exists():
+            return QIcon(str(p))
+        return QIcon()
+
+    def _get_icon_theme_aware(self, name: str) -> QIcon:
+        """
+        For non-sidebar uses you may want theme-aware icons.
+        (Not used for sidebar buttons in this version.)
+        """
+        light = self._is_light_theme()
+        base = Path("assets") / "icons"
+        mapping = {
+            "heart": base / ("heart_dark.png" if light else "heart.png"),
+            "grid": base / ("grid_dark.png" if light else "grid.png"),
+            "list": base / ("list_dark.png" if light else "list.png"),
+        }
+        p = mapping.get(name)
+        if p and p.exists():
+            return QIcon(str(p))
+        return QIcon()
+
+    # ----------------------------
+    # scanning
+    # ----------------------------
     def start_scan(self):
-        self.queue = mp.Queue()
-        self.process = mp.Process(target=scan_libraries, args=(self.queue,))
-        self.process.start()
+        try:
+            if self._scan_process and self._scan_process.is_alive():
+                self._scan_process.terminate()
+        except Exception:
+            pass
 
-        self.timer = QTimer()
-        self.timer.timeout.connect(self.check_results)
-        self.timer.start(500)
+        self._scan_queue = mp.Queue()
+        # scan_libraries must accept the queue and put a list of GameEntry objects into it
+        self._scan_process = mp.Process(target=scan_libraries, args=(self._scan_queue,))
+        self._scan_process.start()
 
-    def check_results(self):
-        if not self.queue.empty():
-            games: list[GameEntry] = self.queue.get()
-            self.all_games = games
+        self._timer = QTimer()
+        self._timer.timeout.connect(self._poll_scan)
+        self._timer.start(400)
+
+    def _poll_scan(self):
+        try:
+            if self._scan_queue and not self._scan_queue.empty():
+                games = self._scan_queue.get()
+                self.all_games = games or []
+                self.apply_filter()
+                self.status_label.setText(f"Found {len(self.all_games)} games")
+                self.sidebar_status.setText(f"{len(self.all_games)} games")
+                self._timer.stop()
+                try:
+                    self._scan_process.terminate()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    # ----------------------------
+    # view helpers
+    # ----------------------------
+    def _show_grid(self, yes: bool):
+        if yes:
+            self.list_widget.hide()
+            self.scroll.show()
+        else:
+            self.scroll.hide()
+            self.list_widget.show()
+
+    def _toggle_view(self):
+        # toggles between grid & list; sidebar icon uses default variants
+        self.view_mode = "list" if self.view_mode == "grid" else "grid"
+        icon_name = "list" if self.view_mode == "grid" else "grid"
+        self.view_toggle.setIcon(self._get_sidebar_icon(icon_name))
+        self._show_grid(self.view_mode == "grid")
+        self.apply_filter()
+
+    # ----------------------------
+    # refresh covers
+    # ----------------------------
+    def _on_refresh_covers(self):
+        reply = QMessageBox.question(self, "Refresh Covers",
+                                     "This will clear the cover cache and re-download covers. Continue?",
+                                     QMessageBox.Yes | QMessageBox.No)
+        if reply != QMessageBox.Yes:
+            return
+
+        try:
+            cache = CACHE_DIR
+            if cache.exists():
+                rmtree(cache)
+            cache.mkdir(parents=True, exist_ok=True)
+            self.sidebar_status.setText("Refreshing covers...")
             self.apply_filter()
+        except Exception as e:
+            QMessageBox.warning(self, "Refresh failed", f"Could not clear cache: {e}")
 
-            self.status_label.setText(f"Found {len(games)} games")
-            self.timer.stop()
-            self.process.terminate()
-
+    # ----------------------------
+    # populate UI
+    # ----------------------------
     def apply_filter(self):
         selected = self.filter_box.currentText()
         favs = get_favorites()
 
-        self.game_list.clear()
+        # clear list and grid
+        self.list_widget.clear()
+        for i in reversed(range(self.grid_layout.count())):
+            w = self.grid_layout.itemAt(i).widget()
+            if w:
+                w.setParent(None)
+
+        row = 0
+        col = 0
+
         for game in self.all_games:
             visible = True
-
             if selected == "Installed Only":
-                visible = game.installed
+                visible = getattr(game, "installed", False)
             elif selected in ["Steam", "Epic", "Riot"]:
-                visible = game.platform.value.lower() == selected.lower()
+                plat = getattr(game, "platform", None)
+                plat_str = getattr(plat, "value", str(plat)).lower() if plat is not None else ""
+                visible = plat_str == selected.lower()
             elif selected == "Favorites":
-                visible = game.id in favs
+                visible = getattr(game, "id", None) in favs
 
-            if visible:
-                widget = GameItemWidget(game)
-                item = QListWidgetItem(self.game_list)
-                item.setSizeHint(widget.sizeHint())
-                item.setData(Qt.UserRole, game)
-                self.game_list.addItem(item)
-                self.game_list.setItemWidget(item, widget)
+            if not visible:
+                continue
 
+            # LIST ROW
+            row_widget = GameItemWidget(game, grid_mode=False)
+            if hasattr(row_widget, "play_button"):
+                row_widget.play_button.clicked.connect(lambda _=None, g=game: self.launch_game(g))
+            item = QListWidgetItem(self.list_widget)
+            item.setSizeHint(row_widget.sizeHint())
+            item.setData(Qt.UserRole, game)
+            self.list_widget.addItem(item)
+            self.list_widget.setItemWidget(item, row_widget)
+
+            # GRID TILE
+            grid_widget = GameItemWidget(game, grid_mode=True)
+            if hasattr(grid_widget, "play_button"):
+                grid_widget.play_button.clicked.connect(lambda _=None, g=game: self.launch_game(g))
+            self.grid_layout.addWidget(grid_widget, row, col)
+            col += 1
+            if col >= self.GRID_COLS:
+                col = 0
+                row += 1
+
+        self._show_grid(self.view_mode == "grid")
+        self.sidebar_status.setText(f"{len(self.all_games)} games")
+
+    # ----------------------------
+    # actions & utilities
+    # ----------------------------
     def open_context_menu(self, position):
-        item = self.game_list.itemAt(position)
+        item = None
+        if self.list_widget.isVisible():
+            item = self.list_widget.itemAt(position)
         if not item:
             return
         game: GameEntry = item.data(Qt.UserRole)
 
         menu = QMenu(self)
-
         play_action = QAction("Play", self)
         play_action.triggered.connect(lambda: self.launch_game(game))
         menu.addAction(play_action)
@@ -138,25 +337,31 @@ class MainWindow(QMainWindow):
         menu.addAction(fav_action)
 
         open_folder = QAction("Open Install Folder", self)
-        open_folder.triggered.connect(lambda: open_install_folder(game.install_path))
+        open_folder.triggered.connect(lambda: open_install_folder(getattr(game, "install_path", "")))
         menu.addAction(open_folder)
 
+        menu.exec(self.list_widget.viewport().mapToGlobal(position))
 
-        menu.exec(self.game_list.viewport().mapToGlobal(position))
-
-    def launch_selected_game(self, item: QListWidgetItem):
+    def _on_item_double(self, item: QListWidgetItem):
         game: GameEntry = item.data(Qt.UserRole)
         self.launch_game(game)
 
     def launch_game(self, game: GameEntry):
-        cmd = game.launch_command()
+        try:
+            cmd = game.launch_command()
+        except Exception:
+            cmd = None
+
         if not cmd:
-            QMessageBox.warning(self, "Launch Error", f"Cannot launch {game.name}")
+            QMessageBox.warning(self, "Launch Error", f"Cannot launch {getattr(game, 'name', 'Unknown')}")
             return
         try:
-            subprocess.Popen(cmd)
+            if isinstance(cmd, (list, tuple)):
+                subprocess.Popen(cmd)
+            else:
+                subprocess.Popen(str(cmd))
         except Exception as e:
-            QMessageBox.critical(self, "Launch Failed", f"Error launching {game.name}:\n{e}")
+            QMessageBox.critical(self, "Launch Failed", f"Error launching {getattr(game, 'name', 'Unknown')}:\n{e}")
 
     def add_to_favorites(self, game: GameEntry):
         add_favorite(game.id)
@@ -169,6 +374,5 @@ class MainWindow(QMainWindow):
     def open_settings_dialog(self):
         dlg = SettingsDialog(self)
         if dlg.exec():
-            # User saved settings → rescan libraries
-            self.status_label.setText("Rescanning libraries...")
+            self.sidebar_status.setText("Rescanning...")
             self.start_scan()

@@ -1,16 +1,19 @@
+# ui/settings_dialog.py
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QLabel, QLineEdit, QPushButton,
-    QFileDialog, QHBoxLayout, QComboBox
+    QFileDialog, QHBoxLayout, QComboBox, QCheckBox, QMessageBox
 )
-from common.theme import apply_theme
+from PySide6.QtCore import Qt
 from common.settings import get_settings, update_setting, load_config, save_config
-
+from common.autostart import enable_autostart, disable_autostart, is_autostart_enabled
+from common.theme import apply_theme
+from PySide6.QtWidgets import QApplication
 
 class SettingsDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Mystical Settings")
-        self.setFixedSize(500, 300)
+        self.setFixedSize(520, 340)
 
         layout = QVBoxLayout(self)
 
@@ -52,28 +55,31 @@ class SettingsDialog(QDialog):
         theme_row = QHBoxLayout()
         theme_row.addWidget(QLabel("Theme:"))
         self.theme_box = QComboBox()
-        # Show pretty names, but store lowercase
-        self.theme_map = {
-            "System": "system",
-            "Light": "light",
-            "Dark": "dark"
-        }
+        self.theme_map = {"System": "system", "Light": "light", "Dark": "dark", "Steam": "steam", "Epic": "epic"}
         self.theme_box.addItems(self.theme_map.keys())
-
         current_theme = load_config().get("theme", "system").lower()
-        # Reverse lookup to match UI name
         for display, internal in self.theme_map.items():
             if current_theme == internal:
                 self.theme_box.setCurrentText(display)
                 break
-
         theme_row.addWidget(self.theme_box)
         layout.addLayout(theme_row)
+
+        # --- Autostart checkbox ---
+        self.autostart_cb = QCheckBox("Start Mystical at login (autostart)")
+        autostart_current = load_config().get("autostart", False)
+        self.autostart_cb.setChecked(bool(autostart_current))
+        # disable on platforms where not supported? we still attempt linux desktop file
+        if not (QApplication.instance().platformName().lower().startswith("windows") or QApplication.instance().platformName().lower().startswith("linux")):
+            # show but disable on unknown platforms (macOS not implemented here)
+            self.autostart_cb.setEnabled(False)
+            self.autostart_cb.setToolTip("Autostart currently implemented for Windows and Linux only.")
+        layout.addWidget(self.autostart_cb)
 
         # --- Save Button ---
         save_btn = QPushButton("Save")
         save_btn.clicked.connect(self.save)
-        layout.addWidget(save_btn)
+        layout.addWidget(save_btn, alignment=Qt.AlignRight)
 
     def browse_path(self, target_input: QLineEdit):
         path = QFileDialog.getExistingDirectory(self, "Select Folder")
@@ -81,21 +87,34 @@ class SettingsDialog(QDialog):
             target_input.setText(path)
 
     def save(self):
+        # write library overrides
         update_setting("steam_path", self.steam_input.text().strip())
         update_setting("epic_path", self.epic_input.text().strip())
         if self.riot_input:
             update_setting("riot_path", self.riot_input.text().strip())
 
-        # Save lowercase version of theme
+        # theme
         chosen_display = self.theme_box.currentText()
         chosen_internal = self.theme_map[chosen_display]
+        update_setting("theme", chosen_internal)
 
-        config = load_config()
-        config["theme"] = self.theme_box.currentText()
-        save_config(config)
+        # autostart
+        autostart_val = bool(self.autostart_cb.isChecked())
+        update_setting("autostart", autostart_val)
 
-        # Apply immediately
-        from PySide6.QtWidgets import QApplication
+        # apply autostart immediately
+        try:
+            if autostart_val:
+                ok = enable_autostart()
+                if not ok:
+                    QMessageBox.warning(self, "Autostart", "Failed to enable autostart. You may need to run as a normal user.")
+            else:
+                disable_autostart()
+        except Exception:
+            # ignore but warn
+            QMessageBox.information(self, "Autostart", "Autostart toggle failed (platform may be unsupported).")
+
+        # Apply theme immediately
         app = QApplication.instance()
         if app:
             apply_theme(app)
