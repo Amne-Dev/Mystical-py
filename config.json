@@ -1,0 +1,16 @@
+{
+  "libraries": {
+    "steam": [],
+    "epic": [],
+    "riot": []
+  },
+  "theme": "system",
+  "autostart": false,
+  "favorites": [],
+  "igdb": {
+    "client_id": "",
+    "client_secret": "",
+    "access_token": "",
+    "expires_at": 0
+  }
+}
