@@ -19,65 +19,75 @@ from backend.models import GameEntry
 from backend.steam_parser import get_steam_games
 from backend.epic_parser import get_epic_games
 from backend.metadata import enrich_game_metadata
-from common.settings import get_default_paths
+from common.settings import get_default_paths, load_config
 import json
 
 
-def scan_riot() -> List[GameEntry]:
+def scan_riot() -> list[GameEntry]:
     """
     Scan RiotClientInstalls.json (Windows/macOS only) to detect Riot games.
-    Returns list[GameEntry]. Safe no-op on Linux.
+    Provides better logging and respects user override in config.json -> libraries.riot (first entry).
     """
-    games: List[GameEntry] = []
+    games = []
 
-    # Riot Vanguard blocks Linux, skip
+    # Riot not supported on Linux by design (Vanguard)
     if not (sys.platform.startswith("win") or sys.platform == "darwin"):
+        log_info("scan_riot: skipping on non-supported OS")
         return games
 
-    defaults = get_default_paths()
-    riot_file = defaults.get("riot")
-    if not riot_file:
+    # Prefer user-overrides (settings) if present
+    cfg = load_config()
+    riot_paths = cfg.get("libraries", {}).get("riot") or []
+    riot_default = get_default_paths().get("riot")
+    if riot_paths:
+        # user provided paths (accept only first for file)
+        riot_file = Path(riot_paths[0])
+    else:
+        riot_file = Path(riot_default) if riot_default else None
+
+    if not riot_file or not riot_file.exists():
+        log_info(f"scan_riot: Riot installs JSON not found (tried: {riot_file})")
         return games
 
     try:
-        path = Path(riot_file)
-        if not path.exists():
-            return games
-
-        data = json.loads(path.read_text(encoding="utf-8"))
-        for key, exe_path in data.items():
-            exe_str = str(exe_path)
-            # If the layout of RiotClientInstalls.json ever changes, adapt here
-            if "LeagueClient" in exe_str:
+        raw = riot_file.read_text(encoding="utf-8")
+        data = json.loads(raw)
+        log_info(f"scan_riot: parsed Riot installs file with {len(data)} entries")
+        for key, path in data.items():
+            p = str(path)
+            # Basic heuristics:
+            if "LeagueClient" in p or "LeagueOfLegends" in p:
                 games.append(GameEntry(
                     id="league",
                     name="League of Legends",
                     platform="riot",
                     installed=True,
-                    install_path=Path(exe_str).parent,
-                    executable=exe_str
+                    install_path=Path(p).parent,
+                    executable=p
                 ))
-            elif "VALORANT" in exe_str.upper():
+            elif "VALORANT" in p.upper():
                 games.append(GameEntry(
                     id="valorant",
                     name="VALORANT",
                     platform="riot",
                     installed=True,
-                    install_path=Path(exe_str).parent,
-                    executable=exe_str
+                    install_path=Path(p).parent,
+                    executable=p
                 ))
-            elif "LoR" in exe_str or "Runeterra" in exe_str:
+            elif "Runeterra" in p or "LegendsOfRuneterra" in p:
                 games.append(GameEntry(
                     id="lor",
                     name="Legends of Runeterra",
                     platform="riot",
                     installed=True,
-                    install_path=Path(exe_str).parent,
-                    executable=exe_str
+                    install_path=Path(p).parent,
+                    executable=p
                 ))
+            else:
+                # unknown path — log for debugging
+                log_info(f"scan_riot: ignored unknown install entry: {p}")
     except Exception as e:
-        log_error(f"scan_riot failed: {e}")
-
+        log_error(f"scan_riot: failed to parse {riot_file}: {e}")
     return games
 
 
