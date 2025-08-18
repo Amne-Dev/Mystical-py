@@ -25,22 +25,20 @@ import json
 
 def scan_riot() -> list[GameEntry]:
     """
-    Scan RiotClientInstalls.json (Windows/macOS only) to detect Riot games.
-    Provides better logging and respects user override in config.json -> libraries.riot (first entry).
+    Scan RiotClientInstalls.json to detect Riot games.
+    Works on Windows/macOS (Linux is skipped).
     """
     games = []
 
-    # Riot not supported on Linux by design (Vanguard)
     if not (sys.platform.startswith("win") or sys.platform == "darwin"):
-        log_info("scan_riot: skipping on non-supported OS")
+        log_info("scan_riot: skipping on unsupported OS")
         return games
 
-    # Prefer user-overrides (settings) if present
     cfg = load_config()
     riot_paths = cfg.get("libraries", {}).get("riot") or []
     riot_default = get_default_paths().get("riot")
+
     if riot_paths:
-        # user provided paths (accept only first for file)
         riot_file = Path(riot_paths[0])
     else:
         riot_file = Path(riot_default) if riot_default else None
@@ -50,45 +48,39 @@ def scan_riot() -> list[GameEntry]:
         return games
 
     try:
-        raw = riot_file.read_text(encoding="utf-8")
-        data = json.loads(raw)
-        log_info(f"scan_riot: parsed Riot installs file with {len(data)} entries")
-        for key, path in data.items():
-            p = str(path)
-            # Basic heuristics:
-            if "LeagueClient" in p or "LeagueOfLegends" in p:
-                games.append(GameEntry(
-                    id="league",
-                    name="League of Legends",
-                    platform="riot",
-                    installed=True,
-                    install_path=Path(p).parent,
-                    executable=p
-                ))
-            elif "VALORANT" in p.upper():
-                games.append(GameEntry(
-                    id="valorant",
-                    name="VALORANT",
-                    platform="riot",
-                    installed=True,
-                    install_path=Path(p).parent,
-                    executable=p
-                ))
-            elif "Runeterra" in p or "LegendsOfRuneterra" in p:
-                games.append(GameEntry(
-                    id="lor",
-                    name="Legends of Runeterra",
-                    platform="riot",
-                    installed=True,
-                    install_path=Path(p).parent,
-                    executable=p
-                ))
+        data = json.loads(riot_file.read_text(encoding="utf-8"))
+        assoc = data.get("associated_client", {})
+        log_info(f"scan_riot: parsed {len(assoc)} associated Riot installs")
+
+        for install_dir, client_exe in assoc.items():
+            install_path = Path(install_dir)
+            if not install_path.exists():
+                continue
+
+            lower_path = install_dir.lower()
+            if "league" in lower_path:
+                name, gid = "League of Legends", "league"
+            elif "valorant" in lower_path:
+                name, gid = "VALORANT", "valorant"
+            elif "runeterra" in lower_path or "lor" in lower_path:
+                name, gid = "Legends of Runeterra", "lor"
             else:
-                # unknown path — log for debugging
-                log_info(f"scan_riot: ignored unknown install entry: {p}")
+                name, gid = Path(install_dir).name, Path(install_dir).name.lower()
+
+            games.append(GameEntry(
+                id=gid,
+                name=name,
+                platform="riot",
+                installed=True,
+                install_path=install_path,
+                executable=client_exe,   # so launch_command can use it
+            ))
+
     except Exception as e:
         log_error(f"scan_riot: failed to parse {riot_file}: {e}")
+
     return games
+
 
 
 def _platform_for_metadata(platform) -> Optional[str]:
@@ -158,7 +150,7 @@ def scan_libraries(queue: Optional[object] = None) -> List[GameEntry]:
     # Put result into queue if requested (mp usage)
     if queue is not None:
         try:
-            queue.put(enriched)
+            queue.put(enriched) # type: ignore
         except Exception as e:
             # If queueing fails, still return results to caller
             log_error(f"Failed to put scan results into queue: {e}")

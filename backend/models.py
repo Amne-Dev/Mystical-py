@@ -1,8 +1,10 @@
-from dataclasses import dataclass
+# backend/models.py
+from dataclasses import dataclass, field
 from pathlib import Path
 import platform as py_platform
 from enum import Enum
 import sys
+from typing import Optional, Union, Dict, Any
 
 # On Windows we’ll use winreg to detect Riot Client location
 if sys.platform.startswith("win"):
@@ -22,15 +24,26 @@ class Platform(Enum):
 class GameEntry:
     id: str
     name: str
-    platform: str | Platform
+    platform: Union[str, Platform]
     installed: bool
-    install_path: Path | None = None
-    image_path: Path | None = None
-    image_url: str | None = None
-    description: str | None = None
-    release_year: int | None = None
 
-    def _find_riot_client(self) -> Path | None:
+    install_path: Optional[Union[Path, str]] = None
+
+    # image_path and cover_path may be a Path or a str (downloaded path or raw string)
+    image_path: Optional[Union[Path, str]] = None
+    cover_path: Optional[Union[Path, str]] = None
+    image_url: Optional[str] = None
+
+    description: Optional[str] = None
+    release_year: Optional[int] = None
+
+    # flexible metadata container (IDs, app_name, other hints)
+    extra: Dict[str, Any] = field(default_factory=dict)
+
+    # optional executable (path to launcher, riot client, etc.)
+    executable: Optional[Union[str, Path]] = None
+
+    def _find_riot_client(self) -> Optional[Path]:
         """Try to locate RiotClientServices.exe (Windows)."""
         if not sys.platform.startswith("win") or not winreg:
             return None
@@ -59,7 +72,7 @@ class GameEntry:
         default_path = Path("C:/Riot Games/Riot Client/RiotClientServices.exe")
         return default_path if default_path.exists() else None
 
-    def launch_command(self) -> list[str] | None:
+    def launch_command(self) -> Optional[list[str]]:
         """
         Returns the system command needed to launch this game.
         """
@@ -76,23 +89,33 @@ class GameEntry:
 
         # ---- Epic ----
         if platform_value == "epic":
+            # prefer using epic handler (platform-dependent)
+            if system == "windows":
+                # use cmd start to invoke URI on windows
+                return ["cmd", "/c", f"start epicgames://launch/{self.id}"]
             return ["epicgames://launch", self.id]
 
         # ---- Riot ----
         if platform_value == "riot":
-            if system == "windows":
-                riot_client = self._find_riot_client()
-                if riot_client:
-                    exe = str(riot_client)
-                    game_id = self.id.lower()
-                    if "league" in game_id:
-                        return [exe, "--launch-product=league_of_legends", "--launch-patchline=live"]
-                    elif "valorant" in game_id:
-                        return [exe, "--launch-product=valorant", "--launch-patchline=live"]
-                    elif "lor" in game_id or "runeterra" in game_id:
-                        return [exe, "--launch-product=bacon", "--launch-patchline=live"]
+            exe = None
+            if self.executable:
+                exe = str(self.executable)
+            elif self.extra.get("riot_client"):
+                exe = str(self.extra["riot_client"])
+            else:
+                rc = self._find_riot_client()
+                exe = str(rc) if rc else None
 
-            # On Linux/macOS fallback: try direct install_path
+            if exe:
+                gid = str(self.id).lower()
+                if "league" in gid or "league_of_legends" in gid:
+                    return [exe, "--launch-product=league_of_legends", "--launch-patchline=live"]
+                elif "valorant" in gid:
+                    return [exe, "--launch-product=valorant", "--launch-patchline=live"]
+                elif "lor" in gid or "runeterra" in gid:
+                    return [exe, "--launch-product=bacon", "--launch-patchline=live"]
+
+            # fallback: try direct install path
             if self.install_path and Path(self.install_path).exists():
                 return [str(self.install_path)]
 

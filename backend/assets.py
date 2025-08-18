@@ -11,7 +11,7 @@ def fetch_assets(game: GameEntry) -> Path | None:
     Currently supports Steam covers via Steam CDN.
     """
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    img_path = CACHE_DIR / f"{game.platform.value}_{game.id}.jpg"
+    img_path = CACHE_DIR / f"{game.platform.value}_{game.id}.jpg" # type: ignore
 
     if img_path.exists():
         return img_path
