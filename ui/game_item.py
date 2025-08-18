@@ -1,63 +1,104 @@
 # ui/game_item.py
+"""
+GameItem widget (grid tile or list row).
+Robust to differences in Qt bindings / static analyzers:
+ - QCoreApplication imported from QtCore (fixes ImportError)
+ - Play button uses objectName/role so global theme controls color
+ - Heart button visuals update when favorites change
+"""
+
 import os
 import re
 import requests
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Any
+
 from PySide6.QtWidgets import (
     QWidget, QLabel, QPushButton, QVBoxLayout, QHBoxLayout,
     QSizePolicy
 )
 from PySide6.QtGui import QPixmap, QIcon, QPalette
-from PySide6.QtCore import Qt, QSize, QCoreApplication
+from PySide6.QtCore import Qt, QSize, QCoreApplication   # <-- QCoreApplication belongs here
 
 from common.favorites import add_favorite, remove_favorite, is_favorite
 
+# Cache directory for downloaded covers
 CACHE_DIR = Path.home() / ".cache" / "mystical" / "covers"
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
+# Display caps
 MAX_COVER_W = 420
 MAX_COVER_H = 620
+
+# Thumbnail size for list mode
 LIST_THUMB_W = 64
 LIST_THUMB_H = 64
+
+# IGDB preferred sizes (try bigger first)
 IGDB_SIZES = ("t_720p", "t_cover_big", "t_cover_med", "t_cover_small", "t_thumb")
 
 
+# ---------------------------
+# Helpers (robust to stubs)
+# ---------------------------
 def _is_light_theme() -> bool:
+    """
+    Detect whether the application's palette is light.
+    Uses safe fallbacks so static analyzers don't complain.
+    """
     app = QCoreApplication.instance()
     if not app:
-        return False
+        return True  # default to light for editing/testing
+
     try:
-        pal: QPalette = app.palette()
-        return pal.color(QPalette.Window).lightness() > pal.color(QPalette.WindowText).lightness()
+        pal = app.palette()
+        # Common style: pal.color(QPalette.Window)
+        win_color = pal.color(QPalette.Window)
+        text_color = pal.color(QPalette.WindowText)
+        return win_color.lightness() > text_color.lightness()
     except Exception:
-        return True
+        # Fallback for differing stubs / Qt versions
+        try:
+            win_color = pal.color(QPalette.ColorRole.Window)  # alternate enum access
+            text_color = pal.color(QPalette.ColorRole.WindowText)
+            return win_color.lightness() > text_color.lightness()
+        except Exception:
+            # Give up, assume dark to avoid bright text on dark backgrounds
+            return False
 
 
 def _theme_colors() -> dict:
+    """
+    Small palette for widget-level styling depending on theme.
+    """
     if _is_light_theme():
         return {
             "cover_bg": "#f5f5f5",
             "thumb_bg": "#efefef",
+            "text": "#111111",
             "meta": "#5f6368",
             "play_bg": "#e8f0fe",
             "play_hover": "#d2e3fc",
             "play_text": "#1a73e8",
             "overlay_bg": "rgba(255,255,255,0.85)",
+            "heart_overlay": "rgba(0,0,0,0.08)",
         }
     else:
         return {
-            "cover_bg": "#2a2a2a",
+            "cover_bg": "#1f2224",
             "thumb_bg": "#2b2b2b",
+            "text": "#e8eaed",
             "meta": "#9aa0a6",
             "play_bg": "#1f78d1",
             "play_hover": "#1766a8",
-            "play_text": "white",
+            "play_text": "#ffffff",
             "overlay_bg": "rgba(0,0,0,0.36)",
+            "heart_overlay": "rgba(255,255,255,0.04)",
         }
 
 
 def _safe_ident(name: str) -> str:
+    """Return a filesystem safe id for caching."""
     if not name:
         return "unknown"
     s = str(name)
@@ -67,6 +108,7 @@ def _safe_ident(name: str) -> str:
 
 
 def _normalize_igdb_url(url: str, preferred_size: str) -> str:
+    """Convert IGDB protocol-relative URLs and replace size token with preferred size."""
     if not url:
         return url
     u = url.strip()
@@ -81,6 +123,7 @@ def _normalize_igdb_url(url: str, preferred_size: str) -> str:
 
 
 def _download_cover(url: str, filename: Path) -> Optional[Path]:
+    """Download a remote URL into filename (returns Path on success)."""
     try:
         r = requests.get(url, timeout=12)
         r.raise_for_status()
@@ -96,7 +139,13 @@ def _download_cover(url: str, filename: Path) -> Optional[Path]:
         return None
 
 
-def get_cached_cover_path(game) -> Optional[str]:
+def get_cached_cover_path(game: Any) -> Optional[str]:
+    """
+    Resolve a local cover path:
+      1) prefer game.image_path or game.cover_path if exists
+      2) try to download using game.cover_url (IGDB url) trying multiple sizes
+    Returns path string or None.
+    """
     for attr in ("image_path", "cover_path"):
         val = getattr(game, attr, None)
         if val:
@@ -120,39 +169,41 @@ def get_cached_cover_path(game) -> Optional[str]:
     if local.exists():
         return str(local)
 
+    # try preferred sizes
     for size in IGDB_SIZES:
         url = _normalize_igdb_url(str(remote), preferred_size=size)
         res = _download_cover(url, local)
         if res:
             return str(res)
-
     return None
 
 
+# ---------------------------
+# Widget
+# ---------------------------
 class GameItemWidget(QWidget):
-    def __init__(self, game, grid_mode: bool = False, parent=None):
+    def __init__(self, game: Any, grid_mode: bool = False, parent=None):
         super().__init__(parent)
-        # allow stylesheet targeting
         self.setObjectName("gameItem")
 
         self.game = game
         self.grid_mode = bool(grid_mode)
         self.colors = _theme_colors()
 
-        # icon candidates
-        self.asset_dir = Path("assets") / "icons"
-        # filled heart (preferred red filled)
-        self.heart_filled_red = self.asset_dir / "heart_filled_red.png"
-        self.heart_filled = self.asset_dir / "heart_filled.png"
-        # outline variants: one for light theme (dark outline) and default white outline
-        self.heart_outline_light = self.asset_dir / "heart_dark.png"
-        self.heart_outline = self.asset_dir / "heart.png"
+        # icon assets directory
+        asset_dir = Path("assets") / "icons"
+        self.heart_filled_red = asset_dir / "heart_filled_red.png"
+        self.heart_filled = asset_dir / "heart_filled.png"
+        self.heart_outline_light = asset_dir / "heart_dark.png"
+        self.heart_outline = asset_dir / "heart.png"
 
-        # pick outline based on theme
-        outline_icon = str(self.heart_outline_light) if _is_light_theme() and self.heart_outline_light.exists() else str(self.heart_outline) if self.heart_outline.exists() else None
-        self._outline_icon_path = outline_icon
+        # choose icons safely
+        self._outline_icon_path = None
+        if _is_light_theme() and self.heart_outline_light.exists():
+            self._outline_icon_path = str(self.heart_outline_light)
+        elif self.heart_outline.exists():
+            self._outline_icon_path = str(self.heart_outline)
 
-        # pick filled icon (prefer explicit red)
         if self.heart_filled_red.exists():
             self._filled_icon_path = str(self.heart_filled_red)
         elif self.heart_filled.exists():
@@ -160,22 +211,24 @@ class GameItemWidget(QWidget):
         else:
             self._filled_icon_path = None
 
+        # Build UI
         if self.grid_mode:
             self._build_grid_ui()
         else:
             self._build_list_ui()
 
-        # ensure the heart icon initial state reflects favorites backend
+        # Ensure heart visual initial state is correct
         self._update_heart_visual()
 
-    # ---------- UI builders ----------
+    # ---- Grid UI ----
     def _build_grid_ui(self):
         main = QVBoxLayout(self)
         main.setContentsMargins(6, 6, 6, 6)
         main.setSpacing(6)
 
+        # cover label (keeps natural pixmap size when possible)
         self.cover_label = QLabel()
-        self.cover_label.setAlignment(Qt.AlignCenter)
+        self.cover_label.setAlignment(getattr(Qt, "AlignCenter", Qt.AlignmentFlag.AlignCenter))
         self.cover_label.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         self.cover_label.setStyleSheet(f"border-radius:6px; background-color: {self.colors['cover_bg']};")
 
@@ -187,7 +240,9 @@ class GameItemWidget(QWidget):
                 if pw <= MAX_COVER_W and ph <= MAX_COVER_H:
                     display = pix
                 else:
-                    display = pix.scaled(MAX_COVER_W, MAX_COVER_H, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                    keep = getattr(Qt, "KeepAspectRatio", Qt.KeepAspectRatio)
+                    smooth = getattr(Qt, "SmoothTransformation", Qt.SmoothTransformation)
+                    display = pix.scaled(MAX_COVER_W, MAX_COVER_H, keep, smooth)
                 self.cover_label.setPixmap(display)
                 self.cover_label.setFixedSize(display.width(), display.height())
             else:
@@ -198,31 +253,34 @@ class GameItemWidget(QWidget):
             self.cover_label.setWordWrap(True)
             self.cover_label.setFixedSize(MAX_COVER_W // 2, MAX_COVER_H // 3)
 
-        main.addWidget(self.cover_label, alignment=Qt.AlignCenter)
+        main.addWidget(self.cover_label, alignment=getattr(Qt, "AlignCenter", Qt.AlignmentFlag.AlignCenter))
 
-        # heart button placed on cover_label
+        # heart (floating, parented to cover_label)
         self.heart_btn = QPushButton(self.cover_label)
         self.heart_btn.setCheckable(True)
         self.heart_btn.setFixedSize(28, 28)
-        self.heart_btn.setStyleSheet(f"border:none; background-color:{self.colors['overlay_bg']}; border-radius:12px;")
+        self.heart_btn.setStyleSheet(f"border:none; background-color: {self.colors.get('heart_overlay','rgba(0,0,0,0.16)')}; border-radius:12px;")
         self.heart_btn.clicked.connect(self._on_heart_clicked)
 
         # title
+        text_color = self.colors.get("text", "#000000")
         self.name_label = QLabel(self.game.name or "Unknown")
-        self.name_label.setAlignment(Qt.AlignCenter)
+        self.name_label.setAlignment(getattr(Qt, "AlignCenter", Qt.AlignmentFlag.AlignCenter))
         self.name_label.setWordWrap(True)
-        self.name_label.setStyleSheet("font-weight:600; margin-top:4px; margin-bottom:4px;")
+        self.name_label.setStyleSheet(f"background: transparent; font-weight:600; margin-top:4px; margin-bottom:4px; color: {text_color};")
         main.addWidget(self.name_label)
 
-        # play button (theme controls appearance)
+        # Play button: DO NOT set color-level stylesheet here.
         self.play_button = QPushButton("Play")
         self.play_button.setObjectName("playButton")
         self.play_button.setProperty("role", "primary")
         self.play_button.setFixedHeight(34)
         main.addWidget(self.play_button)
 
+        # position overlays now (resizeEvent will keep them correct)
         self._reposition_overlays()
 
+    # ---- List UI ----
     def _build_list_ui(self):
         main = QHBoxLayout(self)
         main.setContentsMargins(6, 6, 6, 6)
@@ -230,14 +288,16 @@ class GameItemWidget(QWidget):
 
         self.thumb = QLabel()
         self.thumb.setFixedSize(LIST_THUMB_W, LIST_THUMB_H)
-        self.thumb.setAlignment(Qt.AlignCenter)
+        self.thumb.setAlignment(getattr(Qt, "AlignCenter", Qt.AlignmentFlag.AlignCenter))
         self.thumb.setStyleSheet(f"background-color: {self.colors['thumb_bg']}; border-radius:6px;")
 
         cover_local = get_cached_cover_path(self.game)
         if cover_local and Path(cover_local).exists():
             pix = QPixmap(cover_local)
             if not pix.isNull():
-                display = pix.scaled(LIST_THUMB_W, LIST_THUMB_H, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                keep = getattr(Qt, "KeepAspectRatio", Qt.KeepAspectRatio)
+                smooth = getattr(Qt, "SmoothTransformation", Qt.SmoothTransformation)
+                display = pix.scaled(LIST_THUMB_W, LIST_THUMB_H, keep, smooth)
                 self.thumb.setPixmap(display)
             else:
                 self.thumb.setText("No\nCover")
@@ -248,8 +308,9 @@ class GameItemWidget(QWidget):
 
         v = QVBoxLayout()
         v.setSpacing(2)
+        text_color = self.colors.get("text", "#000")
         self.name_label = QLabel(self.game.name or "Unknown")
-        self.name_label.setStyleSheet("font-weight:600; margin-top:2px; margin-bottom:2px;")
+        self.name_label.setStyleSheet(f"background: transparent; font-weight:600; margin-top:2px; margin-bottom:2px; color: {text_color};")
         v.addWidget(self.name_label)
 
         meta = []
@@ -260,7 +321,7 @@ class GameItemWidget(QWidget):
         if getattr(self.game, "installed", False):
             meta.append("Installed")
         meta_label = QLabel(" • ".join(meta))
-        meta_label.setStyleSheet("font-size:12px;")
+        meta_label.setStyleSheet(f"color: {self.colors.get('meta','#888')}; font-size:12px; background: transparent;")
         v.addWidget(meta_label)
         main.addLayout(v)
         main.addStretch()
@@ -278,7 +339,9 @@ class GameItemWidget(QWidget):
         self.heart_btn.clicked.connect(self._on_heart_clicked)
         main.addWidget(self.heart_btn)
 
-    # repositioning overlay heart on cover
+    # -------------------
+    # overlay positioning
+    # -------------------
     def resizeEvent(self, ev):
         super().resizeEvent(ev)
         self._reposition_overlays()
@@ -293,55 +356,49 @@ class GameItemWidget(QWidget):
             except Exception:
                 pass
 
-    # Update heart icon/appearance according to favorites backend
+    # -------------------
+    # favorites visuals / toggling
+    # -------------------
     def _update_heart_visual(self):
+        # use str keys so type checkers are happy
+        key = str(getattr(self.game, "id", None) or getattr(self.game, "name", ""))
         fav = False
         try:
-            fav = is_favorite(self.game.id)
+            fav = bool(is_favorite(key))
         except Exception:
-            # if backend uses name instead of id, try name
             try:
-                fav = is_favorite(getattr(self.game, "name", ""))
+                fav = bool(is_favorite(str(getattr(self.game, "name", ""))))
             except Exception:
                 fav = False
 
-        # choose icon for checked vs unchecked
         if fav:
-            # prefer explicit filled red icon
             if self._filled_icon_path:
                 self.heart_btn.setIcon(QIcon(self._filled_icon_path))
                 self.heart_btn.setIconSize(QSize(18, 18))
-                # keep neutral circular overlay so the red icon pops
-                self.heart_btn.setStyleSheet("border:none; background-color: rgba(0,0,0,0.32); border-radius:12px;")
+                self.heart_btn.setStyleSheet("border:none; background-color: rgba(0,0,0,0.28); border-radius:12px;")
             else:
-                # fallback: use outline icon and tint the button background red
                 if self._outline_icon_path:
                     self.heart_btn.setIcon(QIcon(self._outline_icon_path))
                     self.heart_btn.setIconSize(QSize(18, 18))
-                # red circular background
                 self.heart_btn.setStyleSheet("border:none; background-color: rgba(220, 20, 60, 0.95); border-radius:12px;")
             self.heart_btn.setChecked(True)
         else:
-            # not favored: outline icon and neutral overlay
             if self._outline_icon_path:
                 self.heart_btn.setIcon(QIcon(self._outline_icon_path))
                 self.heart_btn.setIconSize(QSize(18, 18))
-            self.heart_btn.setStyleSheet("border:none; background-color: rgba(0,0,0,0.16); border-radius:12px;")
+            self.heart_btn.setStyleSheet(f"border:none; background-color: {self.colors.get('heart_overlay','rgba(0,0,0,0.16)')}; border-radius:12px;")
             self.heart_btn.setChecked(False)
 
-    # toggle favorites and update visuals
     def _on_heart_clicked(self):
+        key = str(getattr(self.game, "id", None) or getattr(self.game, "name", ""))
         try:
-            # Use id first; fallback to name
-            key = getattr(self.game, "id", None) or getattr(self.game, "name", None)
             if is_favorite(key):
                 remove_favorite(key)
             else:
                 add_favorite(key)
         except Exception:
-            # best effort fallback: toggle by name
             try:
-                name = getattr(self.game, "name", "")
+                name = str(getattr(self.game, "name", ""))
                 if is_favorite(name):
                     remove_favorite(name)
                 else:
@@ -349,5 +406,5 @@ class GameItemWidget(QWidget):
             except Exception:
                 pass
 
-        # update the icon immediately
+        # refresh icon immediately
         self._update_heart_visual()

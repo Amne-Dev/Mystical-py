@@ -5,6 +5,7 @@ import os
 import sys
 from pathlib import Path
 from shutil import rmtree
+import webbrowser
 
 from PySide6.QtCore import QTimer, Qt, QSize
 from PySide6.QtWidgets import (
@@ -22,20 +23,58 @@ from common.favorites import get_favorites, add_favorite, remove_favorite, is_fa
 
 
 def open_install_folder(path):
+    """Open folder using platform-appropriate method. Accepts Path or str."""
     try:
-        if sys.platform == "win32":
-            os.startfile(path)
+        if not path:
+            return
+        p = str(path)
+        if sys.platform.startswith("win"):
+            os.startfile(p)
         elif sys.platform == "darwin":
-            subprocess.Popen(["open", str(path)])
+            subprocess.Popen(["open", p])
         else:
-            subprocess.Popen(["xdg-open", str(path)])
+            opener = shutil.which("xdg-open") or shutil.which("gio") or shutil.which("xdg-open")
+            if opener:
+                subprocess.Popen([opener, p])
+            else:
+                subprocess.Popen(["xdg-open", p])
     except Exception:
+        # ignore failures to avoid breaking UI
         pass
+
+
+def _open_uri(uri: str) -> bool:
+    """
+    Open a protocol URI in a platform-friendly way.
+    Returns True on success-ish, False on failure.
+    """
+    try:
+        if sys.platform.startswith("win"):
+            # os.startfile works for protocol handlers (steam://, com.epicgames.launcher://)
+            os.startfile(uri)
+            return True
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", uri])
+            return True
+        else:
+            opener = shutil.which("xdg-open") or shutil.which("gio") or shutil.which("xdg-open")
+            if opener:
+                subprocess.Popen([opener, uri])
+                return True
+            # fallback to webbrowser which handles protocol URIs in many systems
+            webbrowser.open(uri)
+            return True
+    except Exception:
+        try:
+            webbrowser.open(uri)
+            return True
+        except Exception:
+            return False
 
 
 class MainWindow(QMainWindow):
     GRID_COLS = 4
-    GRID_CELL_W = 260
+    GRID_CELL_W = 220
     GRID_CELL_H = 300
 
     def __init__(self):
@@ -232,8 +271,12 @@ class MainWindow(QMainWindow):
 
     def _toggle_view(self):
         # toggles between grid & list; sidebar icon uses default variants
-        self.view_mode = "list" if self.view_mode == "grid" else "grid"
-        icon_name = "list" if self.view_mode == "grid" else "grid"
+        # compute new mode first, then choose icon to reflect action (switch-to)
+        new_mode = "list" if self.view_mode == "grid" else "grid"
+        # set the toolbar icon to indicate the other view (pressing will switch)
+        icon_name = "list" if new_mode == "list" else "grid"
+        # actually flip mode
+        self.view_mode = new_mode
         self.view_toggle.setIcon(self._get_sidebar_icon(icon_name))
         self._show_grid(self.view_mode == "grid")
         self.apply_filter()
@@ -254,6 +297,7 @@ class MainWindow(QMainWindow):
                 rmtree(cache)
             cache.mkdir(parents=True, exist_ok=True)
             self.sidebar_status.setText("Refreshing covers...")
+            # re-run scan to repopulate metadata (or just re-apply filter so UI updates placeholders)
             self.apply_filter()
         except Exception as e:
             QMessageBox.warning(self, "Refresh failed", f"Could not clear cache: {e}")
@@ -265,12 +309,16 @@ class MainWindow(QMainWindow):
         selected = self.filter_box.currentText()
         favs = get_favorites()
 
-        # clear list and grid
-        self.list_widget.clear()
-        for i in reversed(range(self.grid_layout.count())):
-            w = self.grid_layout.itemAt(i).widget()
-            if w:
-                w.setParent(None)
+        # clear visible widgets for the current mode
+        if self.view_mode == "list":
+            self.list_widget.clear()
+        else:
+            # clear grid container
+            for i in reversed(range(self.grid_layout.count())):
+                item = self.grid_layout.itemAt(i)
+                w = item.widget() if item else None
+                if w:
+                    w.setParent(None)
 
         row = 0
         col = 0
@@ -289,25 +337,29 @@ class MainWindow(QMainWindow):
             if not visible:
                 continue
 
-            # LIST ROW
-            row_widget = GameItemWidget(game, grid_mode=False)
-            if hasattr(row_widget, "play_button"):
-                row_widget.play_button.clicked.connect(lambda _=None, g=game: self.launch_game(g))
-            item = QListWidgetItem(self.list_widget)
-            item.setSizeHint(row_widget.sizeHint())
-            item.setData(Qt.UserRole, game)
-            self.list_widget.addItem(item)
-            self.list_widget.setItemWidget(item, row_widget)
+            # LIST ROW (only create when list view active)
+            if self.view_mode == "list":
+                row_widget = GameItemWidget(game, grid_mode=False)
+                if hasattr(row_widget, "play_button"):
+                    # bind button to launch; use default arg-binding to capture game
+                    row_widget.play_button.clicked.connect(lambda _=None, g=game: self.launch_game(g))
+                item = QListWidgetItem(self.list_widget)
+                item.setSizeHint(row_widget.sizeHint())
+                item.setData(Qt.UserRole, game)
+                self.list_widget.addItem(item)
+                self.list_widget.setItemWidget(item, row_widget)
 
-            # GRID TILE
-            grid_widget = GameItemWidget(game, grid_mode=True)
-            if hasattr(grid_widget, "play_button"):
-                grid_widget.play_button.clicked.connect(lambda _=None, g=game: self.launch_game(g))
-            self.grid_layout.addWidget(grid_widget, row, col)
-            col += 1
-            if col >= self.GRID_COLS:
-                col = 0
-                row += 1
+            # GRID TILE (only create when grid view active)
+            if self.view_mode == "grid":
+                grid_widget = GameItemWidget(game, grid_mode=True)
+                if hasattr(grid_widget, "play_button"):
+                    grid_widget.play_button.clicked.connect(lambda _=None, g=game: self.launch_game(g))
+                # add to grid layout
+                self.grid_layout.addWidget(grid_widget, row, col)
+                col += 1
+                if col >= self.GRID_COLS:
+                    col = 0
+                    row += 1
 
         self._show_grid(self.view_mode == "grid")
         self.sidebar_status.setText(f"{len(self.all_games)} games")
@@ -328,7 +380,7 @@ class MainWindow(QMainWindow):
         play_action.triggered.connect(lambda: self.launch_game(game))
         menu.addAction(play_action)
 
-        if is_favorite(game.id):
+        if is_favorite(getattr(game, "id", None) or getattr(game, "name", "")):
             fav_action = QAction("Remove from Favorites", self)
             fav_action.triggered.connect(lambda: self.remove_from_favorites(game))
         else:
@@ -347,6 +399,10 @@ class MainWindow(QMainWindow):
         self.launch_game(game)
 
     def launch_game(self, game: GameEntry):
+        """
+        Use GameEntry.launch_command() when available, but handle common URI protocols properly
+        so we don't rely on a local 'steam' executable being on PATH (Windows).
+        """
         try:
             cmd = game.launch_command()
         except Exception:
@@ -355,20 +411,63 @@ class MainWindow(QMainWindow):
         if not cmd:
             QMessageBox.warning(self, "Launch Error", f"Cannot launch {getattr(game, 'name', 'Unknown')}")
             return
+
+        # If cmd is a list/tuple and contains a URI (steam:// or com.epicgames.launcher://), open via OS handler
         try:
             if isinstance(cmd, (list, tuple)):
-                subprocess.Popen(cmd)
-            else:
-                subprocess.Popen(str(cmd))
+                # if any arg contains '://' treat as a protocol launch
+                joined = " ".join(str(c) for c in cmd)
+                protocol_arg = None
+                for part in cmd:
+                    ps = str(part)
+                    if "://" in ps:
+                        protocol_arg = ps
+                        break
+
+                if protocol_arg:
+                    ok = _open_uri(protocol_arg)
+                    if not ok:
+                        QMessageBox.critical(self, "Launch Failed", f"Failed to open protocol URI for {getattr(game, 'name', 'Unknown')}")
+                    return
+
+                # otherwise try running the provided executable command directly
+                try:
+                    subprocess.Popen([str(x) for x in cmd])
+                    return
+                except FileNotFoundError:
+                    # Try first element as executable path
+                    exe = cmd[0] if cmd else None
+                    if exe:
+                        try:
+                            subprocess.Popen([str(exe)])
+                            return
+                        except Exception as e:
+                            QMessageBox.critical(self, "Launch Failed", f"Error launching {getattr(game, 'name', 'Unknown')}:\n{e}")
+                            return
+                    else:
+                        QMessageBox.critical(self, "Launch Failed", f"Unable to run launch command for {getattr(game, 'name', 'Unknown')}")
+                        return
+
+            # If cmd is a plain string and looks like a URI use _open_uri
+            if isinstance(cmd, str):
+                if "://" in cmd:
+                    if not _open_uri(cmd):
+                        QMessageBox.critical(self, "Launch Failed", f"Failed to open protocol URI for {getattr(game, 'name', 'Unknown')}")
+                    return
+                else:
+                    subprocess.Popen(cmd, shell=True)
+                    return
+
+            QMessageBox.critical(self, "Launch Failed", f"Unsupported launch command for {getattr(game, 'name', 'Unknown')}")
         except Exception as e:
             QMessageBox.critical(self, "Launch Failed", f"Error launching {getattr(game, 'name', 'Unknown')}:\n{e}")
 
     def add_to_favorites(self, game: GameEntry):
-        add_favorite(game.id)
+        add_favorite(getattr(game, "id", getattr(game, "name", "")))
         self.apply_filter()
 
     def remove_from_favorites(self, game: GameEntry):
-        remove_favorite(game.id)
+        remove_favorite(getattr(game, "id", getattr(game, "name", "")))
         self.apply_filter()
 
     def open_settings_dialog(self):
