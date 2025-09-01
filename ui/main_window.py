@@ -1,4 +1,5 @@
 # ui/main_window.py
+import shutil
 import subprocess
 import multiprocessing as mp
 import os
@@ -103,16 +104,16 @@ class MainWindow(QMainWindow):
         sidebar_l.setSpacing(10)
 
         lbl = QLabel("Mystical")
-        lbl.setAlignment(Qt.AlignCenter)
+        lbl.setAlignment(Qt.AlignCenter) # type: ignore
         lbl.setStyleSheet("font-weight:700; color: white;")
         sidebar_l.addWidget(lbl)
 
         self.sidebar_status = QLabel("Scanning...")
         self.sidebar_status.setStyleSheet("color:#cfcfcf; font-size:12px;")
-        self.sidebar_status.setAlignment(Qt.AlignCenter)
+        self.sidebar_status.setAlignment(Qt.AlignCenter) # type: ignore
         sidebar_l.addWidget(self.sidebar_status)
 
-        sidebar_l.addSpacerItem(QSpacerItem(10, 10, QSizePolicy.Minimum, QSizePolicy.Expanding))
+        sidebar_l.addSpacerItem(QSpacerItem(10, 10, QSizePolicy.Minimum, QSizePolicy.Expanding)) # type: ignore
 
         # View toggle (sidebar button) — ALWAYS use default icons (no _dark)
         self.view_toggle = QPushButton()
@@ -120,7 +121,7 @@ class MainWindow(QMainWindow):
         self.view_toggle.setIconSize(QSize(28, 28))
         self.view_toggle.setFlat(True)
         self.view_toggle.clicked.connect(self._toggle_view)
-        sidebar_l.addWidget(self.view_toggle, alignment=Qt.AlignHCenter)
+        sidebar_l.addWidget(self.view_toggle, alignment=Qt.AlignHCenter) # type: ignore
 
         # Refresh covers button (sidebar) — default icon
         self.refresh_btn = QPushButton()
@@ -129,7 +130,7 @@ class MainWindow(QMainWindow):
         self.refresh_btn.setFlat(True)
         self.refresh_btn.setToolTip("Refresh covers (clears cache)")
         self.refresh_btn.clicked.connect(self._on_refresh_covers)
-        sidebar_l.addWidget(self.refresh_btn, alignment=Qt.AlignHCenter)
+        sidebar_l.addWidget(self.refresh_btn, alignment=Qt.AlignHCenter) # type: ignore
 
         # Settings (gear) — sidebar, default icon
         self.settings_btn = QPushButton()
@@ -137,9 +138,9 @@ class MainWindow(QMainWindow):
         self.settings_btn.setIconSize(QSize(28, 28))
         self.settings_btn.setFlat(True)
         self.settings_btn.clicked.connect(self.open_settings_dialog)
-        sidebar_l.addWidget(self.settings_btn, alignment=Qt.AlignHCenter)
+        sidebar_l.addWidget(self.settings_btn, alignment=Qt.AlignHCenter) # type: ignore
 
-        sidebar_l.addSpacerItem(QSpacerItem(10, 10, QSizePolicy.Minimum, QSizePolicy.Expanding))
+        sidebar_l.addSpacerItem(QSpacerItem(10, 10, QSizePolicy.Minimum, QSizePolicy.Expanding)) # type: ignore
 
         root.addWidget(sidebar)
 
@@ -163,21 +164,21 @@ class MainWindow(QMainWindow):
 
         # list view
         self.list_widget = QListWidget()
-        self.list_widget.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.list_widget.setContextMenuPolicy(Qt.CustomContextMenu) # type: ignore
         self.list_widget.customContextMenuRequested.connect(self.open_context_menu)
         self.list_widget.itemDoubleClicked.connect(self._on_item_double)
         content_l.addWidget(self.list_widget)
 
         # grid view (scrollable)
-        self.scroll = QScrollArea()
-        self.scroll.setWidgetResizable(True)
+        self.scroll = QScrollArea() # type: ignore
+        self.scroll.setWidgetResizable(True) # type: ignore
         self.grid_container = QWidget()
         self.grid_layout = QGridLayout(self.grid_container)
         # tighter spacing
         self.grid_layout.setContentsMargins(6, 6, 6, 6)
         self.grid_layout.setSpacing(8)
-        self.scroll.setWidget(self.grid_container)
-        content_l.addWidget(self.scroll)
+        self.scroll.setWidget(self.grid_container) # type: ignore
+        content_l.addWidget(self.scroll) # type: ignore
 
         root.addWidget(content, stretch=1)
 
@@ -192,8 +193,8 @@ class MainWindow(QMainWindow):
         app = QApplication.instance()
         if not app:
             return False
-        pal: QPalette = app.palette()
-        return pal.color(QPalette.Window).lightness() > pal.color(QPalette.WindowText).lightness()
+        pal: QPalette = app.palette() # type: ignore
+        return pal.color(QPalette.Window).lightness() > pal.color(QPalette.WindowText).lightness() # type: ignore
 
     def _get_sidebar_icon(self, name: str) -> QIcon:
         """
@@ -252,7 +253,7 @@ class MainWindow(QMainWindow):
                 self.sidebar_status.setText(f"{len(self.all_games)} games")
                 self._timer.stop()
                 try:
-                    self._scan_process.terminate()
+                    self._scan_process.terminate() # type: ignore
                 except Exception:
                     pass
         except Exception:
@@ -264,9 +265,9 @@ class MainWindow(QMainWindow):
     def _show_grid(self, yes: bool):
         if yes:
             self.list_widget.hide()
-            self.scroll.show()
+            self.scroll.show() # type: ignore
         else:
-            self.scroll.hide()
+            self.scroll.hide() # type: ignore
             self.list_widget.show()
 
     def _toggle_view(self):
@@ -287,8 +288,8 @@ class MainWindow(QMainWindow):
     def _on_refresh_covers(self):
         reply = QMessageBox.question(self, "Refresh Covers",
                                      "This will clear the cover cache and re-download covers. Continue?",
-                                     QMessageBox.Yes | QMessageBox.No)
-        if reply != QMessageBox.Yes:
+                                     QMessageBox.Yes | QMessageBox.No) # type: ignore
+        if reply != QMessageBox.Yes: # type: ignore
             return
 
         try:
@@ -345,7 +346,7 @@ class MainWindow(QMainWindow):
                     row_widget.play_button.clicked.connect(lambda _=None, g=game: self.launch_game(g))
                 item = QListWidgetItem(self.list_widget)
                 item.setSizeHint(row_widget.sizeHint())
-                item.setData(Qt.UserRole, game)
+                item.setData(Qt.UserRole, game) # type: ignore
                 self.list_widget.addItem(item)
                 self.list_widget.setItemWidget(item, row_widget)
 
@@ -373,7 +374,7 @@ class MainWindow(QMainWindow):
             item = self.list_widget.itemAt(position)
         if not item:
             return
-        game: GameEntry = item.data(Qt.UserRole)
+        game: GameEntry = item.data(Qt.UserRole) # type: ignore
 
         menu = QMenu(self)
         play_action = QAction("Play", self)
@@ -395,7 +396,7 @@ class MainWindow(QMainWindow):
         menu.exec(self.list_widget.viewport().mapToGlobal(position))
 
     def _on_item_double(self, item: QListWidgetItem):
-        game: GameEntry = item.data(Qt.UserRole)
+        game: GameEntry = item.data(Qt.UserRole) # type: ignore
         self.launch_game(game)
 
     def launch_game(self, game: GameEntry):

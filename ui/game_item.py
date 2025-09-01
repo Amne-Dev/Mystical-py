@@ -51,16 +51,16 @@ def _is_light_theme() -> bool:
         return True  # default to light for editing/testing
 
     try:
-        pal = app.palette()
+        pal = app.palette() # type: ignore
         # Common style: pal.color(QPalette.Window)
-        win_color = pal.color(QPalette.Window)
-        text_color = pal.color(QPalette.WindowText)
+        win_color = pal.color(QPalette.Window) # pyright: ignore[reportAttributeAccessIssue]
+        text_color = pal.color(QPalette.WindowText) # type: ignore
         return win_color.lightness() > text_color.lightness()
     except Exception:
         # Fallback for differing stubs / Qt versions
         try:
-            win_color = pal.color(QPalette.ColorRole.Window)  # alternate enum access
-            text_color = pal.color(QPalette.ColorRole.WindowText)
+            win_color = pal.color(QPalette.ColorRole.Window)  # type: ignore # alternate enum access
+            text_color = pal.color(QPalette.ColorRole.WindowText) # type: ignore
             return win_color.lightness() > text_color.lightness()
         except Exception:
             # Give up, assume dark to avoid bright text on dark backgrounds
@@ -229,7 +229,7 @@ class GameItemWidget(QWidget):
         # cover label (keeps natural pixmap size when possible)
         self.cover_label = QLabel()
         self.cover_label.setAlignment(getattr(Qt, "AlignCenter", Qt.AlignmentFlag.AlignCenter))
-        self.cover_label.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self.cover_label.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed) # type: ignore
         self.cover_label.setStyleSheet(f"border-radius:6px; background-color: {self.colors['cover_bg']};")
 
         cover_local = get_cached_cover_path(self.game)
@@ -240,8 +240,8 @@ class GameItemWidget(QWidget):
                 if pw <= MAX_COVER_W and ph <= MAX_COVER_H:
                     display = pix
                 else:
-                    keep = getattr(Qt, "KeepAspectRatio", Qt.KeepAspectRatio)
-                    smooth = getattr(Qt, "SmoothTransformation", Qt.SmoothTransformation)
+                    keep = getattr(Qt, "KeepAspectRatio", Qt.KeepAspectRatio) # type: ignore
+                    smooth = getattr(Qt, "SmoothTransformation", Qt.SmoothTransformation) # type: ignore
                     display = pix.scaled(MAX_COVER_W, MAX_COVER_H, keep, smooth)
                 self.cover_label.setPixmap(display)
                 self.cover_label.setFixedSize(display.width(), display.height())
@@ -295,8 +295,8 @@ class GameItemWidget(QWidget):
         if cover_local and Path(cover_local).exists():
             pix = QPixmap(cover_local)
             if not pix.isNull():
-                keep = getattr(Qt, "KeepAspectRatio", Qt.KeepAspectRatio)
-                smooth = getattr(Qt, "SmoothTransformation", Qt.SmoothTransformation)
+                keep = getattr(Qt, "KeepAspectRatio", Qt.KeepAspectRatio) # type: ignore
+                smooth = getattr(Qt, "SmoothTransformation", Qt.SmoothTransformation) # type: ignore
                 display = pix.scaled(LIST_THUMB_W, LIST_THUMB_H, keep, smooth)
                 self.thumb.setPixmap(display)
             else:
